@@ -1,15 +1,11 @@
 const axios = require("axios");
-
 const pool = require("../config/db.js");
 
-function isNear(point, hazard) {
-	//Haversine formula
-
+function haversineDistance(point, hazard) {
 	const [lng1, lat1] = point;
 	const { lng: lng2, lat: lat2 } = hazard;
 
-	const R = 6371e3; // meters
-
+	const R = 6371e3;
 	const toRad = (deg) => (deg * Math.PI) / 180;
 
 	const φ1 = toRad(lat1);
@@ -22,17 +18,16 @@ function isNear(point, hazard) {
 		Math.cos(φ1) * Math.cos(φ2) * Math.sin(Δλ / 2) * Math.sin(Δλ / 2);
 
 	const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+	return R * c;
+}
 
-	const distance = R * c;
-
-	return distance < 100; // within 100 meters
+function isNear(point, hazard, threshold = 100) {
+	return haversineDistance(point, hazard) < threshold;
 }
 
 function getBoundingBox(coords) {
-	let minLat = Infinity,
-		maxLat = -Infinity;
-	let minLng = Infinity,
-		maxLng = -Infinity;
+	let minLat = Infinity, maxLat = -Infinity;
+	let minLng = Infinity, maxLng = -Infinity;
 
 	coords.forEach(([lng, lat]) => {
 		minLat = Math.min(minLat, lat);
@@ -45,28 +40,20 @@ function getBoundingBox(coords) {
 }
 
 exports.getRoute = async (from, to) => {
-	console.log("Surprise madafaka 🤯");
 	const url = `https://router.project-osrm.org/route/v1/driving/${from};${to}?alternatives=true&overview=full&geometries=geojson`;
 
-	console.log(url);
+	console.log("[routing] OSRM request:", url);
 
 	const response = await axios.get(url);
-
 	const routes = response.data.routes;
-
-	// //Get Hazards
-	// const hazardRes = await pool.query(`SELECT * FROM hazards`);
-	// const hazards = hazardRes.rows;
 
 	let bestRoute = null;
 	let bestScore = Infinity;
 	let bestDetails = null;
+	let bestHazardsOnRoute = [];
 
-	//Evaluation
 	for (const route of routes) {
-		//let score = route.duration;
 		const coords = route.geometry.coordinates;
-
 		const { minLat, maxLat, minLng, maxLng } = getBoundingBox(coords);
 
 		const hazardRes = await pool.query(
@@ -81,18 +68,21 @@ exports.getRoute = async (from, to) => {
 		let hazardCount = 0;
 		let penalty = 0;
 		let typeBreakdown = {};
-
-		//let score = route.duration;
+		const hazardsOnRoute = [];
 
 		hazards.forEach((h) => {
 			for (let i = 0; i < coords.length; i += 5) {
 				if (isNear(coords[i], h)) {
-					const weight = h.severity * 30;
-
+					// Use severity for penalty (works with existing schema)
+					const weight = (h.severity || 1) * 30;
 					penalty += weight;
 					hazardCount++;
-
 					typeBreakdown[h.type] = (typeBreakdown[h.type] || 0) + 1;
+
+					// Avoid duplicates in hazardsOnRoute
+					if (!hazardsOnRoute.find((x) => x.id === h.id)) {
+						hazardsOnRoute.push(h);
+					}
 					break;
 				}
 			}
@@ -103,7 +93,7 @@ exports.getRoute = async (from, to) => {
 		if (score < bestScore) {
 			bestScore = score;
 			bestRoute = route;
-
+			bestHazardsOnRoute = hazardsOnRoute;
 			bestDetails = {
 				score,
 				hazardCount,
@@ -112,9 +102,11 @@ exports.getRoute = async (from, to) => {
 			};
 		}
 	}
+
 	return {
 		bestRoute,
 		allRoutes: routes,
 		analysis: bestDetails,
+		hazardsOnRoute: bestHazardsOnRoute,
 	};
 };
