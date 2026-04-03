@@ -4,17 +4,18 @@ const pool = require("./config/db.js");
 
 const PORT = process.env.PORT || 5000;
 
-console.log("hello: ", process.env.DATABASE_URL);
+// Start server immediately — don't block on DB connection
+app.listen(PORT, () => {
+	console.log(`Server running on port ${PORT} 🚀`);
+	console.log(`API endpoint: http://localhost:${PORT}`);
+});
 
+// Test DB connection separately (soft fail — Neon may drop idle connections)
 pool.connect()
-	.then(() => {
+	.then((client) => {
 		console.log("Connected to Neon DB ✅");
-
-		app.listen(PORT, () => {
-			console.log(`Server running on port ${PORT}`);
-			console.log(`API endpoint: http://localhost:${PORT}`);
-		});
+		client.release();
 	})
 	.catch((err) => {
-		console.error("DB connection failed ❌", err);
+		console.warn("DB connection warning (will retry on demand):", err.message);
 	});
